@@ -24,25 +24,17 @@ impl ParakeetASR {
         )?;
 
         let features = self.model.fbank_features(&audio, audio.len() as i64)?;
-        log::info!("features shape: {:?}", features.shape());
-        log::info!("features: {}", features);
 
         let blank_id = self.tokenizer.blank_id();
-        log::info!("blank_id: {}", blank_id);
 
-        let num_duration = 5;
-        let max_symbols = 10;
+        //let num_duration = 5;
+        //let max_symbols = 10;
 
         let encoder_output = self.model.encoder_infer(&features)?;
-        log::info!("encoder_output shape: {:?}", encoder_output.shape());
-        log::info!("encoder_output: {}", encoder_output);
 
         let encoder_output_length = encoder_output.shape()[1];
-        log::info!("encoder_output_length: {}", encoder_output_length);
 
         let encoder_output_projected = self.model.joint_enc_infer(&encoder_output)?;
-        log::info!("encoder_output_projected shape: {:?}", encoder_output_projected.shape());
-        log::info!("encoder_output_projected: {}", encoder_output_projected);
 
         let (mut last_state0, mut last_state1) = self.model.get_init_decoder_state()?;
         let (mut state0, mut state1) = self.model.get_init_decoder_state()?;
@@ -154,11 +146,6 @@ impl ParakeetASR {
             }
             state0 = state0_next;
             state1 = state1_next;
-            log::info!("token: {}, duration: {}, time_index: {}",
-                self.tokenizer.decode(label),
-                duration,
-                time_index_current_labels,
-            );
             if label != blank_id {
                 asr_result.add_token_record(
                     self.tokenizer.decode(label).to_string(),
