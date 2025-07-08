@@ -21,7 +21,7 @@ fn main() -> Result<(), ParakeetError> {
 
     let asr = ParakeetASR::new(model_dir, true)?;
 
-    let audio_path = Path::new("/Users/jason/prj/parakeet").join("long.wav");
+    let audio_path = Path::new("/Users/jason/").join("record.wav");
     let audio = load_audio(audio_path);
     let mut res = asr.infer_buffer(&audio)?;
     println!("Result: {}", res.to_text());

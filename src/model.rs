@@ -51,14 +51,14 @@ impl ParakeetModel {
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
-            .with_inter_threads(1)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join(encoder_model_name))?;
 
         let decoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
-            .with_inter_threads(1)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join("decoder.onnx"))?;
 
         let joint_pred = Session::builder().unwrap()
