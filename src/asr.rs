@@ -233,10 +233,12 @@ impl ASRResult {
             let is_period = token_record.token == ".";
             let is_starting_token = token_record.token.starts_with(TOKEN_PREFIX);
 
-            if is_period && idx < (token_len - 1) && !is_starting_token {
+            if is_period && idx < (token_len - 1) && !self.token_records[idx+1].token.starts_with(TOKEN_PREFIX) {
                 in_abbr_state = true;
             }
 
+            //println!("is_starting_token: {}, is_punctuation: {}, is_period: {}, in_abbr_state: {}, token: {}",
+            //    is_starting_token, is_punctuation, is_period, in_abbr_state, token_record.token);
             if is_starting_token ||
                 (is_punctuation && !(is_period && in_abbr_state))
             {
