@@ -226,10 +226,21 @@ impl ASRResult {
         let mut word_start_time = 0.0;
         let mut word_buffer = String::new();
         let mut word_duration = 0.0;
-        for token_record in &self.token_records {
+        let mut in_abbr_state = false;
+        let token_len = self.token_records.len();
+        for (idx, token_record) in self.token_records.iter().enumerate() {
             let is_punctuation = EN_PUNCTUATION.contains(&token_record.token);
-            if token_record.token.starts_with(TOKEN_PREFIX) || is_punctuation {
-                if!word_buffer.is_empty() {
+            let is_period = token_record.token == ".";
+            let is_starting_token = token_record.token.starts_with(TOKEN_PREFIX);
+
+            if is_period && idx < (token_len - 1) && !is_starting_token {
+                in_abbr_state = true;
+            }
+
+            if is_starting_token ||
+                (is_punctuation && !(is_period && in_abbr_state))
+            {
+                if !word_buffer.is_empty() {
                     self.word_records.push(WordRecognitionRecord {
                         word: word_buffer.clone(),
                         start_time: word_start_time,
@@ -240,6 +251,7 @@ impl ASRResult {
                 }
                 word_buffer.push_str(&token_record.token.replace(TOKEN_PREFIX, " "));
                 word_start_time = token_record.time_index as f32 * ASR_WINDOW;
+                in_abbr_state = false;
             } else {
                 word_buffer.push_str(&token_record.token);
             }
