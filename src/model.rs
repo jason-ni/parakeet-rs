@@ -65,28 +65,28 @@ impl ParakeetModel {
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
-            .with_inter_threads(1)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join("joint.pred.onnx"))?;
 
         let joint_enc = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
-            .with_inter_threads(1)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join("joint.enc.onnx"))?;
 
         let joint_net = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
-            .with_inter_threads(1)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join("joint.joint_net.onnx"))?;
 
         let preprocessor = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
-            .with_inter_threads(1)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join("nemo128.onnx"))?;
         Ok(ParakeetModel {
             encoder,
