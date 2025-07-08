@@ -10,9 +10,9 @@ pub struct ParakeetASR {
 }
 
 impl ParakeetASR {
-    pub fn new(model_path: &str) -> Result<Self, ParakeetError> {
+    pub fn new(model_path: &str, is_quantized: bool) -> Result<Self, ParakeetError> {
         let tokenizer = ParakeetTokenizer::new(model_path)?;
-        let model = ParakeetModel::new(model_path)?;
+        let model = ParakeetModel::new(model_path, is_quantized)?;
         Ok(Self { tokenizer, model })
     }
 

@@ -41,37 +41,47 @@ fn log_softmax(input: &ArrayViewD<f32>, axis: Axis) -> Result<ArrayD<f32>, Parak
 }
 
 impl ParakeetModel {
-    pub fn new<P: AsRef<Path>>(model_dir: P) -> Result<Self, ParakeetError> {
+    pub fn new<P: AsRef<Path>>(model_dir: P, is_quantized: bool) -> Result<Self, ParakeetError> {
+        let encoder_model_name = if is_quantized {
+            "encoder.int8.onnx"
+        } else {
+            "full_encoder.onnx"
+        };
         let encoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
             .with_inter_threads(1)?
-            .commit_from_file(model_dir.as_ref().join("encoder.int8.onnx"))?;
+            .commit_from_file(model_dir.as_ref().join(encoder_model_name))?;
+
         let decoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
             .with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join("decoder.onnx"))?;
+
         let joint_pred = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
             .with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join("joint.pred.onnx"))?;
+
         let joint_enc = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
             .with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join("joint.enc.onnx"))?;
+
         let joint_net = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
             .with_intra_threads(1)?
             .with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join("joint.joint_net.onnx"))?;
+
         let preprocessor = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?

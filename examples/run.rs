@@ -17,11 +17,11 @@ fn load_audio<P: AsRef<Path>>(audio_path: P) -> Vec<f32> {
 fn main() -> Result<(), ParakeetError> {
     env_logger::init();
 
-    let model_dir = "/Users/jason/prj/parakeet";
+    let model_dir = "/Users/jason/model/asr/parakeet-tdt-0.6b-v2";
 
-    let asr = ParakeetASR::new(model_dir)?;
+    let asr = ParakeetASR::new(model_dir, true)?;
 
-    let audio_path = Path::new(model_dir).join("long.wav");
+    let audio_path = Path::new("/Users/jason/prj/parakeet").join("long.wav");
     let audio = load_audio(audio_path);
     let mut res = asr.infer_buffer(&audio)?;
     println!("Result: {}", res.to_text());
