@@ -1,12 +1,18 @@
 use anyhow::{Context};
 use std::path::Path;
-use std::io::{self, BufRead, BufReader};
+use std::io::{BufRead, BufReader};
 use std::ops::Add;
-use ndarray::{ArrayViewD, ArrayD, IxDyn, arr2, ArrayBase, OwnedRepr, Array2, Ix2, Axis};
+use ndarray::{ArrayViewD, ArrayD, IxDyn, Axis};
 use ndarray_stats::QuantileExt;
 use crate::errors::ParakeetError;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
+#[cfg(target_os = "macos")]
+use ort::execution_providers::CoreMLExecutionProvider;
+#[cfg(not(target_os = "macos"))]
+use ort::execution_providers::TensorRTExecutionProvider;
+use ort::execution_providers::ExecutionProviderDispatch;
+use ort::value::{TensorRef, Tensor};
 
 pub struct ParakeetModel {
     encoder: Session,
@@ -40,6 +46,21 @@ fn log_softmax(input: &ArrayViewD<f32>, axis: Axis) -> Result<ArrayD<f32>, Parak
     Ok(log_softmax_values)
 }
 
+#[allow(unused_variables)]
+#[cfg(target_os = "macos")]
+fn get_platform_provider<P: AsRef<Path>>(model_dir: P) -> ExecutionProviderDispatch {
+    CoreMLExecutionProvider::default().build()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_platform_provider<P: AsRef<Path>>(model_dir: P) -> ExecutionProviderDispatch {
+    let trt_cache_dir = model_dir.as_ref().join("trt_cache");
+    TensorRTExecutionProvider::default()
+        .with_engine_cache(true)
+        .with_engine_cache_path(trt_cache_dir.to_str().unwrap())
+        .build()
+}
+
 impl ParakeetModel {
     pub fn new<P: AsRef<Path>>(model_dir: P, is_quantized: bool) -> Result<Self, ParakeetError> {
         let encoder_model_name = if is_quantized {
@@ -47,46 +68,55 @@ impl ParakeetModel {
         } else {
             "full_encoder.onnx"
         };
+
+        let provider = get_platform_provider(model_dir.as_ref());
+
         let encoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_execution_providers([provider.clone()])?
             .with_parallel_execution(true)?
-            .with_intra_threads(1)?
-            .with_inter_threads(4)?
+            //.with_intra_threads(1)?
+            //.with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join(encoder_model_name))?;
 
         let decoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_execution_providers([provider.clone()])?
             .with_parallel_execution(true)?
-            .with_intra_threads(1)?
-            .with_inter_threads(4)?
-            .commit_from_file(model_dir.as_ref().join("decoder.onnx"))?;
+            //.with_intra_threads(1)?
+            //.with_inter_threads(1)?
+            .commit_from_file(model_dir.as_ref().join("decoder.int8.onnx"))?;
 
         let joint_pred = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_execution_providers([provider.clone()])?
             .with_parallel_execution(true)?
-            .with_intra_threads(1)?
-            .with_inter_threads(4)?
-            .commit_from_file(model_dir.as_ref().join("joint.pred.onnx"))?;
+            //.with_intra_threads(1)?
+            //.with_inter_threads(1)?
+            .commit_from_file(model_dir.as_ref().join("joint.pred.int8.onnx"))?;
 
         let joint_enc = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
-            .with_intra_threads(1)?
-            .with_inter_threads(4)?
-            .commit_from_file(model_dir.as_ref().join("joint.enc.onnx"))?;
+            .with_execution_providers([provider.clone()])?
+            //.with_intra_threads(1)?
+            //.with_inter_threads(1)?
+            .commit_from_file(model_dir.as_ref().join("joint.enc.int8.onnx"))?;
 
         let joint_net = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
-            .with_intra_threads(1)?
-            .with_inter_threads(4)?
-            .commit_from_file(model_dir.as_ref().join("joint.joint_net.onnx"))?;
+            .with_execution_providers([provider.clone()])?
+            //.with_intra_threads(1)?
+            //.with_inter_threads(1)?
+            .commit_from_file(model_dir.as_ref().join("joint.joint_net.int8.onnx"))?;
 
         let preprocessor = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_execution_providers([provider.clone()])?
             .with_parallel_execution(true)?
-            .with_intra_threads(1)?
-            .with_inter_threads(4)?
+            //.with_intra_threads(1)?
+            //.with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join("nemo128.onnx"))?;
         Ok(ParakeetModel {
             encoder,
@@ -98,36 +128,35 @@ impl ParakeetModel {
         })
     }
 
-    pub fn fbank_features(&self, audio: &ArrayViewD<f32>, audio_len: i64) -> Result<ArrayD<f32>, ParakeetError> {
-        let audio_size = ndarray::Array1::from_shape_fn(1, |_| audio_len as i64);
+    pub fn fbank_features(&mut self, audio: &ArrayViewD<f32>, audio_len: i64) -> Result<ArrayD<f32>, ParakeetError> {
         let inputs = ort::inputs![
-            "waveforms" => audio.clone().into_dyn(),
-            "waveforms_lens" => audio_size,
-        ]?;
+            "waveforms" => TensorRef::from_array_view(audio.view())?,
+            "waveforms_lens" => Tensor::from_array(([1], vec![audio_len].into_boxed_slice()))?,
+        ];
         let outputs = self.preprocessor.run(inputs)?;
-        let features: ArrayViewD<f32> = outputs.get("features").unwrap().try_extract_tensor()?;
+        let features = outputs.get("features").unwrap().try_extract_array()?;
         Ok(features.to_owned())
     }
 
-    pub fn encoder_infer(&self, features: &ArrayD<f32>) -> Result<ArrayD<f32>, ParakeetError> {
-        let input_length= features.shape()[2];
-        let input_length = ndarray::Array1::from_shape_fn(1, |_| input_length as i64);
+    pub fn encoder_infer(&mut self, features: &ArrayViewD<f32>) -> Result<ArrayD<f32>, ParakeetError> {
+        let input_length= features.shape()[2] as i64;
         let inputs = ort::inputs![
-            "audio_signal" => features.clone().into_dyn(),
-            "length" => input_length,
-        ]?;
+            "audio_signal" => TensorRef::from_array_view(features.view())?,
+            "length" => Tensor::from_array(([1], vec![input_length].into_boxed_slice()))?,
+        ];
         let outputs = self.encoder.run(inputs)?;
-        let encoder_output: ArrayViewD<f32> = outputs.get("outputs").unwrap().try_extract_tensor()?;
+        let encoder_output = outputs.get("outputs").unwrap().try_extract_array()?;
         let encoder_output = encoder_output.permuted_axes(IxDyn(&[0, 2, 1]));
         Ok(encoder_output.to_owned())
     }
 
-    pub fn joint_enc_infer(&self, encoder_output: &ArrayD<f32>) -> Result<ArrayD<f32>, ParakeetError> {
+    pub fn joint_enc_infer(&mut self, encoder_output: &ArrayViewD<f32>) -> Result<ArrayD<f32>, ParakeetError> {
+        let contiguous_encoder_output = encoder_output.as_standard_layout();
         let inputs = ort::inputs![
-            "input" => encoder_output.clone().into_dyn(),
-        ]?;
+            "input" => TensorRef::from_array_view(contiguous_encoder_output.view())?
+        ];
         let outputs = self.joint_enc.run(inputs)?;
-        let res = outputs.get("output").unwrap().try_extract_tensor()?;
+        let res = outputs.get("output").unwrap().try_extract_array()?;
         Ok(res.to_owned())
     }
 
@@ -138,24 +167,22 @@ impl ParakeetModel {
     }
 
     pub fn decoder_infer(
-        &self,
+        &mut self,
         target: i64,
-        state0: &ArrayD<f32>,
-        state1: &ArrayD<f32>,
+        state0: &ArrayViewD<f32>,
+        state1: &ArrayViewD<f32>,
     ) -> Result<(ArrayD<f32>, ArrayD<f32>, ArrayD<f32>), ParakeetError> {
-        let target_array: ArrayD<i32> = ArrayD::from_shape_fn(IxDyn(&[1, 1]), |_| target as i32);
-        let target_length = ndarray::Array1::from_shape_fn(1, |_| 1i32);
         let inputs = ort::inputs![
-            "targets" => target_array.into_dyn(),
-            "target_length" => target_length,
-            "states.1" => state0.clone().into_dyn(),
-            "onnx::Slice_3" => state1.clone().into_dyn(),
-        ]?;
+            "targets" => Tensor::from_array(([1, 1], vec![target as i32].into_boxed_slice()))?,
+            "target_length" => Tensor::from_array(([1], vec![1i32].into_boxed_slice()))?,
+            "states.1" => TensorRef::from_array_view(state0.view())?,
+            "onnx::Slice_3" => TensorRef::from_array_view(state1.view())?,
+        ];
         let outputs = self.decoder.run(inputs)?;
-        let decoder_output: ArrayViewD<f32> = outputs.get("outputs").unwrap().try_extract_tensor()?;
+        let decoder_output = outputs.get("outputs").unwrap().try_extract_array()?;
         let decoder_output = decoder_output.permuted_axes(IxDyn(&[0, 2, 1]));
-        let state0_next: ArrayViewD<f32> = outputs.get("states").unwrap().try_extract_tensor()?;
-        let state1_next: ArrayViewD<f32> = outputs.get("162").unwrap().try_extract_tensor()?;
+        let state0_next: ArrayViewD<f32> = outputs.get("states").unwrap().try_extract_array()?;
+        let state1_next: ArrayViewD<f32> = outputs.get("162").unwrap().try_extract_array()?;
         Ok((
             decoder_output.to_owned(),
             state0_next.to_owned(),
@@ -164,30 +191,30 @@ impl ParakeetModel {
     }
 
     pub fn joint_pred_infer(
-        &self,
-        decoder_output: &ArrayD<f32>,
+        &mut self,
+        decoder_output: &ArrayViewD<f32>,
     ) -> Result<ArrayD<f32>, ParakeetError> {
         let inputs = ort::inputs![
-            "onnx::MatMul_0" => decoder_output.clone().into_dyn(),
-        ]?;
+            "onnx::MatMul_0" => TensorRef::from_array_view(decoder_output.view())?,
+        ];
         let outputs = self.joint_pred.run(inputs)?;
-        let res = outputs.get("5").unwrap().try_extract_tensor()?;
+        let res = outputs.get("5").unwrap().try_extract_array()?;
         Ok(res.to_owned())
     }
 
     pub fn joint_net_infer(
-        &self,
-        f: &ArrayD<f32>,
-        g: &ArrayD<f32>,
+        &mut self,
+        f: &ArrayViewD<f32>,
+        g: &ArrayViewD<f32>,
     ) -> Result<ArrayD<f32>, ParakeetError> {
         let ff = f.to_shape(IxDyn(&[1, 1, 1, 640]))?;
         let gg = g.to_shape(IxDyn(&[1, 1, 1, 640]))?;
-        let input: ArrayD<f32> = ff.add(gg).to_owned();
+        let input = ff.add(gg);
         let inputs = ort::inputs![
-            "input.1" => input.clone().into_dyn(),
-        ]?;
+            "input.1" => TensorRef::from_array_view(input.view())?,
+        ];
         let outputs = self.joint_net.run(inputs)?;
-        let res = outputs.get("6").unwrap().try_extract_tensor()?;
+        let res = outputs.get("6").unwrap().try_extract_array()?;
         let res = log_softmax(&res, Axis(3))?;
         Ok(res)
     }

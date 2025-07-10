@@ -9,7 +9,7 @@ ndarray = "0.16.1"
 ndarray-stats = "0.6.0"
 thiserror = "1.0"
 anyhow = "1.0.98"
-ort = { git = "ssh://git@github.com/jason-ni/ort.git", branch = "v2.0.0-rc.9-1.17.1"}
+ort = { version = "2.0.0-rc.10" , features = ["coreml", "cuda", "tensorrt"]}
 
 [dev-dependencies]
 env_logger = "0.11.3"

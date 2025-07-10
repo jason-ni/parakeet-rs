@@ -1,5 +1,4 @@
-use anyhow::Context;
-use ndarray::{ArrayD, ArrayViewD, IxDyn, s, Axis};
+use ndarray::{ArrayViewD, IxDyn, s};
 use ndarray_stats::QuantileExt;
 use crate::model::{ParakeetModel, ParakeetTokenizer};
 use crate::errors::ParakeetError;
@@ -16,7 +15,7 @@ impl ParakeetASR {
         Ok(Self { tokenizer, model })
     }
 
-    pub fn infer_buffer(&self, buffer: &[f32]) -> Result<ASRResult, ParakeetError> {
+    pub fn infer_buffer(&mut self, buffer: &[f32]) -> Result<ASRResult, ParakeetError> {
         let shape = vec![1, buffer.len()];
         let audio: ArrayViewD<f32> = ArrayViewD::from_shape(
             IxDyn(&shape),
@@ -28,47 +27,40 @@ impl ParakeetASR {
         let blank_id = self.tokenizer.blank_id();
 
         //let num_duration = 5;
-        //let max_symbols = 10;
 
-        let encoder_output = self.model.encoder_infer(&features)?;
+        let encoder_output = self.model.encoder_infer(&features.view())?;
 
         let encoder_output_length = encoder_output.shape()[1];
 
-        let encoder_output_projected = self.model.joint_enc_infer(&encoder_output)?;
+        let encoder_output_projected = self.model.joint_enc_infer(&encoder_output.view())?;
 
-        let (mut last_state0, mut last_state1) = self.model.get_init_decoder_state()?;
         let (mut state0, mut state1) = self.model.get_init_decoder_state()?;
-        let mut labels = ndarray::Array1::from_shape_fn(1, |_| blank_id);
 
         let mut time_index = 0usize;
         let mut safe_time_index = 0;
-        let mut time_index_current_labels = 0;
-        let mut last_timestamps = encoder_output_length - 1;
+        let mut time_index_current_labels;
+        let last_timestamps = encoder_output_length - 1;
 
         let mut active = encoder_output_length > 0;
         let mut advance = false;
-        let mut active_prev = false;
         let mut label = blank_id;
-        let mut score = 0.0;
-        let mut duration = 0;
+        let mut score;
+        let mut duration;
 
         let mut asr_result = ASRResult::new();
 
         while active {
-            active_prev = active;
-
             // state 1: get decoder (prediction network) output
             let (mut decoder_output, state0_next, state1_next) = self.model.decoder_infer(
                 label,
-                &state0,
-                &state1,
+                &state0.view(),
+                &state1.view(),
             )?;
-            decoder_output = self.model.joint_pred_infer(&decoder_output)?;
-            let f: ArrayD<f32> = encoder_output_projected.slice(s![0, safe_time_index, ..])
-                .to_shape(IxDyn(&[1, 1, 640]))?
-                .to_owned();
+            decoder_output = self.model.joint_pred_infer(&decoder_output.view())?;
+            let f_slice = encoder_output_projected.slice(s![0, safe_time_index, ..]);
+            let f =  f_slice.to_shape(IxDyn(&[1, 1, 640]))?;
             let logits = self.model.joint_net_infer(
-                &f, &decoder_output)?;
+                &f.view(), &decoder_output.view())?;
             //log::info!("logits shape: {:?}", logits.shape());
             //log::info!("logits: {}", logits);
 
@@ -88,7 +80,7 @@ impl ParakeetASR {
             duration = jump_duration_index as i32;
             time_index_current_labels = time_index;
 
-            if label == blank_id && duration == 0 {
+            if duration == 0 {
                 duration = 1;
             }
 
@@ -106,11 +98,10 @@ impl ParakeetASR {
 
                 //log::info!("safe_time_index: {}", safe_time_index);
 
-                let f: ArrayD<f32> = encoder_output_projected.slice(s![0, safe_time_index, ..])
-                    .to_shape(IxDyn(&[1, 1, 640]))?
-                    .to_owned();
+                let f_slice = encoder_output_projected.slice(s![0, safe_time_index, ..]);
+                let f = f_slice.to_shape(IxDyn(&[1, 1, 640]))?;
                 let logits = self.model.joint_net_infer(
-                    &f, &decoder_output)?;
+                    &f.view(), &decoder_output.view())?;
                 //log::info!("advance logits shape: {:?}", logits.shape());
                 //log::info!("advance logits: {}", logits);
                 score = logits.slice(s![0, 0, 0, ..1025]).max()?.to_owned();
@@ -186,13 +177,11 @@ pub struct SegmentRecognitionRecord {
 const TOKEN_PREFIX: &str = "▁";
 const ASR_WINDOW: f32 = 0.08;
 const EN_PUNCTUATION: &str = ".,;:!?";
-const EN_SENTENCE_END: &str = ".!?";
 
 #[derive(Debug)]
 pub struct ASRResult {
     token_records: Vec<TokenRecognitionRecord>,
     word_records: Vec<WordRecognitionRecord>,
-    segment_records: Vec<SegmentRecognitionRecord>,
 }
 
 impl ASRResult {
@@ -201,7 +190,6 @@ impl ASRResult {
         Self {
             token_records: vec![],
             word_records: vec![],
-            segment_records: vec![],
         }
     }
 
