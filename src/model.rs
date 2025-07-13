@@ -48,8 +48,8 @@ fn log_softmax(input: &ArrayViewD<f32>, axis: Axis) -> Result<ArrayD<f32>, Parak
 
 #[allow(unused_variables)]
 #[cfg(target_os = "macos")]
-fn get_platform_provider(has_cuda: bool) -> ExecutionProviderDispatch {
-    CoreMLExecutionProvider::default().build()
+fn get_platform_provider(has_cuda: bool) -> Vec<ExecutionProviderDispatch> {
+    vec![CoreMLExecutionProvider::default().build()]
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -157,7 +157,7 @@ impl ParakeetModel {
         log::info!("Loading preprocessor model from nemo128.onnx...");
         let preprocessor = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([CUDAExecutionProvider::default().build()])?
+            .with_execution_providers(providers.clone())?
             .with_parallel_execution(true)?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
