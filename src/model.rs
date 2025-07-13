@@ -10,7 +10,7 @@ use ort::session::Session;
 #[cfg(target_os = "macos")]
 use ort::execution_providers::CoreMLExecutionProvider;
 #[cfg(not(target_os = "macos"))]
-use ort::execution_providers::TensorRTExecutionProvider;
+use ort::execution_providers::{CUDAExecutionProvider, DirectMLExecutionProvider};
 use ort::execution_providers::ExecutionProviderDispatch;
 use ort::value::{TensorRef, Tensor};
 
@@ -48,72 +48,116 @@ fn log_softmax(input: &ArrayViewD<f32>, axis: Axis) -> Result<ArrayD<f32>, Parak
 
 #[allow(unused_variables)]
 #[cfg(target_os = "macos")]
-fn get_platform_provider<P: AsRef<Path>>(model_dir: P) -> ExecutionProviderDispatch {
+fn get_platform_provider(has_cuda: bool) -> ExecutionProviderDispatch {
     CoreMLExecutionProvider::default().build()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn get_platform_provider<P: AsRef<Path>>(model_dir: P) -> ExecutionProviderDispatch {
+fn get_platform_provider(has_cuda: bool) -> Vec<ExecutionProviderDispatch> {
+    // NOTE: TRT build is too slow, so we use CUDA for now.
+    /*
     let trt_cache_dir = model_dir.as_ref().join("trt_cache");
     TensorRTExecutionProvider::default()
         .with_engine_cache(true)
         .with_engine_cache_path(trt_cache_dir.to_str().unwrap())
-        .build()
+        .with_fp16(quantized)
+        .build(),
+     */
+    if has_cuda {
+        vec![CUDAExecutionProvider::default().build()]
+    } else {
+        vec![DirectMLExecutionProvider::default().build()]
+    }
 }
 
 impl ParakeetModel {
-    pub fn new<P: AsRef<Path>>(model_dir: P, is_quantized: bool) -> Result<Self, ParakeetError> {
+    pub fn new<P: AsRef<Path>>(model_dir: P, mut is_quantized: bool, has_cuda: bool) -> Result<Self, ParakeetError> {
+
+        if has_cuda {
+            is_quantized = false;
+        }
+
         let encoder_model_name = if is_quantized {
             "encoder.int8.onnx"
         } else {
-            "full_encoder.onnx"
+            "encoder.fp32.onnx"
         };
 
-        let provider = get_platform_provider(model_dir.as_ref());
+        let providers = get_platform_provider(has_cuda);
 
+        log::info!("Loading encoder model from {}...", encoder_model_name);
         let encoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([provider.clone()])?
+            .with_execution_providers(providers.clone())?
             .with_parallel_execution(true)?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
             .commit_from_file(model_dir.as_ref().join(encoder_model_name))?;
 
+        let decoder_model_name = if is_quantized {
+            "decoder.int8.onnx"
+        } else {
+            "decoder.onnx"
+        };
+
+        log::info!("Loading decoder model from {}...", decoder_model_name);
         let decoder = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([provider.clone()])?
+            .with_execution_providers(providers.clone())?
             .with_parallel_execution(true)?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
-            .commit_from_file(model_dir.as_ref().join("decoder.int8.onnx"))?;
+            .commit_from_file(model_dir.as_ref().join(decoder_model_name))?;
+
+        let joint_pred_model_name = if is_quantized {
+            "joint.pred.int8.onnx"
+        } else {
+            "joint.pred.onnx"
+        };
+
+        log::info!("Loading joint_pred model from {}...", joint_pred_model_name);
 
         let joint_pred = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([provider.clone()])?
+            .with_execution_providers(providers.clone())?
             .with_parallel_execution(true)?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
-            .commit_from_file(model_dir.as_ref().join("joint.pred.int8.onnx"))?;
+            .commit_from_file(model_dir.as_ref().join(joint_pred_model_name))?;
 
+        let joint_enc_model_name = if is_quantized {
+            "joint.enc.int8.onnx"
+        } else {
+            "joint.enc.onnx"
+        };
+        log::info!("Loading joint_enc model from {}...", joint_enc_model_name);
         let joint_enc = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
-            .with_execution_providers([provider.clone()])?
+            .with_execution_providers(providers.clone())?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
-            .commit_from_file(model_dir.as_ref().join("joint.enc.int8.onnx"))?;
+            .commit_from_file(model_dir.as_ref().join(joint_enc_model_name))?;
+
+        let joint_net_model_name = if is_quantized {
+            "joint.joint_net.int8.onnx"
+        } else {
+            "joint.joint_net.onnx"
+        };
+        log::info!("Loading joint_net model from {}...", joint_net_model_name);
 
         let joint_net = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_parallel_execution(true)?
-            .with_execution_providers([provider.clone()])?
+            .with_execution_providers(providers.clone())?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
-            .commit_from_file(model_dir.as_ref().join("joint.joint_net.int8.onnx"))?;
+            .commit_from_file(model_dir.as_ref().join(joint_net_model_name))?;
 
+        log::info!("Loading preprocessor model from nemo128.onnx...");
         let preprocessor = Session::builder().unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([provider.clone()])?
+            .with_execution_providers([CUDAExecutionProvider::default().build()])?
             .with_parallel_execution(true)?
             //.with_intra_threads(1)?
             //.with_inter_threads(1)?
@@ -139,6 +183,7 @@ impl ParakeetModel {
     }
 
     pub fn encoder_infer(&mut self, features: &ArrayViewD<f32>) -> Result<ArrayD<f32>, ParakeetError> {
+        log::trace!("Running encoder inference...");
         let input_length= features.shape()[2] as i64;
         let inputs = ort::inputs![
             "audio_signal" => TensorRef::from_array_view(features.view())?,
@@ -151,6 +196,7 @@ impl ParakeetModel {
     }
 
     pub fn joint_enc_infer(&mut self, encoder_output: &ArrayViewD<f32>) -> Result<ArrayD<f32>, ParakeetError> {
+        log::trace!("Running joint_enc inference...");
         let contiguous_encoder_output = encoder_output.as_standard_layout();
         let inputs = ort::inputs![
             "input" => TensorRef::from_array_view(contiguous_encoder_output.view())?
@@ -172,6 +218,7 @@ impl ParakeetModel {
         state0: &ArrayViewD<f32>,
         state1: &ArrayViewD<f32>,
     ) -> Result<(ArrayD<f32>, ArrayD<f32>, ArrayD<f32>), ParakeetError> {
+        log::trace!("Running decoder inference...");
         let inputs = ort::inputs![
             "targets" => Tensor::from_array(([1, 1], vec![target as i32].into_boxed_slice()))?,
             "target_length" => Tensor::from_array(([1], vec![1i32].into_boxed_slice()))?,
@@ -194,6 +241,7 @@ impl ParakeetModel {
         &mut self,
         decoder_output: &ArrayViewD<f32>,
     ) -> Result<ArrayD<f32>, ParakeetError> {
+        log::trace!("Running joint_pred inference...");
         let inputs = ort::inputs![
             "onnx::MatMul_0" => TensorRef::from_array_view(decoder_output.view())?,
         ];
@@ -207,6 +255,7 @@ impl ParakeetModel {
         f: &ArrayViewD<f32>,
         g: &ArrayViewD<f32>,
     ) -> Result<ArrayD<f32>, ParakeetError> {
+        log::trace!("Running joint_net inference...");
         let ff = f.to_shape(IxDyn(&[1, 1, 1, 640]))?;
         let gg = g.to_shape(IxDyn(&[1, 1, 1, 640]))?;
         let input = ff.add(gg);

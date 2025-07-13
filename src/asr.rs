@@ -9,9 +9,9 @@ pub struct ParakeetASR {
 }
 
 impl ParakeetASR {
-    pub fn new(model_path: &str, is_quantized: bool) -> Result<Self, ParakeetError> {
+    pub fn new(model_path: &str, is_quantized: bool, has_cuda: bool) -> Result<Self, ParakeetError> {
         let tokenizer = ParakeetTokenizer::new(model_path)?;
-        let model = ParakeetModel::new(model_path, is_quantized)?;
+        let model = ParakeetModel::new(model_path, is_quantized, has_cuda)?;
         Ok(Self { tokenizer, model })
     }
 
@@ -61,22 +61,22 @@ impl ParakeetASR {
             let f =  f_slice.to_shape(IxDyn(&[1, 1, 640]))?;
             let logits = self.model.joint_net_infer(
                 &f.view(), &decoder_output.view())?;
-            //log::info!("logits shape: {:?}", logits.shape());
-            //log::info!("logits: {}", logits);
+            //log::trace!("logits shape: {:?}", logits.shape());
+            //log::trace!("logits: {}", logits);
 
             score = logits.slice(s![0, 0, 0, ..1025]).max()?.to_owned();
             label = match logits.slice(s![0, 0, 0, ..1025]).argmax() {
                 Ok(label) => label as i64,
                 Err(e) => return Err(ParakeetError::from(e)),
             };
-            //log::info!("score: {}, label: {}, token: {}, safe_time_index: {}",
-            //    score, label, self.tokenizer.decode(label), safe_time_index);
+            log::trace!("score: {}, label: {}, token: {}, safe_time_index: {}",
+                score, label, self.tokenizer.decode(label), safe_time_index);
 
             let jump_duration_index = match logits.slice(s![0, 0, 0, 1025..]).argmax() {
                 Ok(jump_duration_index) => jump_duration_index as i64,
                 Err(e) => return Err(ParakeetError::from(e)),
             };
-            //log::info!("duration: {}", jump_duration_index);
+            log::trace!("duration: {}", jump_duration_index);
             duration = jump_duration_index as i32;
             time_index_current_labels = time_index;
 
@@ -96,27 +96,27 @@ impl ParakeetASR {
             while advance {
                 time_index_current_labels = time_index;
 
-                //log::info!("safe_time_index: {}", safe_time_index);
+                //log::trace!("safe_time_index: {}", safe_time_index);
 
                 let f_slice = encoder_output_projected.slice(s![0, safe_time_index, ..]);
                 let f = f_slice.to_shape(IxDyn(&[1, 1, 640]))?;
                 let logits = self.model.joint_net_infer(
                     &f.view(), &decoder_output.view())?;
-                //log::info!("advance logits shape: {:?}", logits.shape());
-                //log::info!("advance logits: {}", logits);
+                //log::trace!("advance logits shape: {:?}", logits.shape());
+                //log::trace!("advance logits: {}", logits);
                 score = logits.slice(s![0, 0, 0, ..1025]).max()?.to_owned();
                 label = match logits.slice(s![0, 0, 0, ..1025]).argmax() {
                     Ok(label) => label as i64,
                     Err(e) => return Err(ParakeetError::from(e)),
                 };
-                //log::info!("advance score: {}, label: {}, token: {}",
-                //    score, label, self.tokenizer.decode(label));
+                log::trace!("advance score: {}, label: {}, token: {}",
+                    score, label, self.tokenizer.decode(label));
 
                 let jump_duration_index = match logits.slice(s![0, 0, 0, 1025..]).argmax() {
                     Ok(jump_duration_index) => jump_duration_index as i64,
                     Err(e) => return Err(ParakeetError::from(e)),
                 };
-                //log::info!("advance jump_duration_index: {}", jump_duration_index);
+                //log::trace!("advance jump_duration_index: {}", jump_duration_index);
                 duration = jump_duration_index as i32;
 
                 if label == blank_id && duration == 0 {
@@ -132,7 +132,7 @@ impl ParakeetASR {
                 } else {
                     advance = false;
                 }
-                //log::info!("active: {}, advance: {}, safe_time_index: {}, time_index_current_labels: {}",
+                //log::trace!("active: {}, advance: {}, safe_time_index: {}, time_index_current_labels: {}",
                 //    active, advance, safe_time_index, time_index_current_labels);
             }
             state0 = state0_next;

@@ -18,8 +18,10 @@ fn main() -> Result<(), ParakeetError> {
     env_logger::init();
 
     let model_dir = std::env::args().nth(1).expect("Please provide model directory as the first argument");
+    let is_quantized = std::env::args().nth(2).map_or(false, |s| s == "true");
+    let has_cuda = std::env::args().nth(3).map_or(false, |s| s == "true");
 
-    let mut asr = ParakeetASR::new(&model_dir, true)?;
+    let mut asr = ParakeetASR::new(&model_dir, is_quantized, has_cuda)?;
 
     let audio_path = Path::new("assets/record.wav");
     let audio = load_audio(audio_path);
