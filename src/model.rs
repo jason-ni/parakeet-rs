@@ -7,13 +7,10 @@ use ndarray_stats::QuantileExt;
 use crate::errors::ParakeetError;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
-#[cfg(target_os = "macos")]
-use ort::execution_providers::CoreMLExecutionProvider;
-#[cfg(target_os = "macos")]
-use ort::execution_providers::coreml::CoreMLComputeUnits::{self, CPUAndGPU, CPUAndNeuralEngine};
 #[cfg(not(target_os = "macos"))]
-use ort::execution_providers::{CUDAExecutionProvider, DirectMLExecutionProvider};
-use ort::execution_providers::ExecutionProviderDispatch;
+use ort::execution_providers::CUDAExecutionProvider;
+use ort::execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch};
+use ort::memory::DeviceType::CPU;
 use ort::value::{TensorRef, Tensor};
 
 pub struct ParakeetModel {
@@ -48,42 +45,30 @@ fn log_softmax(input: &ArrayViewD<f32>, axis: Axis) -> Result<ArrayD<f32>, Parak
     Ok(log_softmax_values)
 }
 
+#[allow(unused_variables)]
 #[cfg(target_os = "macos")]
-fn get_coreml_provider(model_dir: &str, unit: CoreMLComputeUnits) -> ExecutionProviderDispatch {
-    let cache_dir_path = Path::new(model_dir).join("coreml_cache");
-    if!cache_dir_path.exists() {
-        std::fs::create_dir_all(&cache_dir_path).expect("Failed to create cache directory for CoreML");
-    }
-    CoreMLExecutionProvider::default()
-        .with_compute_units(unit)
-        .with_low_precision_accumulation_on_gpu(true)
-        .with_model_cache_dir(cache_dir_path.to_str().unwrap())
-        .build()
+fn get_platform_provider(has_cuda: bool) -> Vec<ExecutionProviderDispatch> {
+    vec![CPUExecutionProvider::default().build()]
 }
 
 #[cfg(target_os = "windows")]
 fn get_platform_provider(has_cuda: bool) -> Vec<ExecutionProviderDispatch> {
-    // NOTE: TRT build is too slow, so we use CUDA for now.
-    /*
-    let trt_cache_dir = model_dir.as_ref().join("trt_cache");
-    TensorRTExecutionProvider::default()
-        .with_engine_cache(true)
-        .with_engine_cache_path(trt_cache_dir.to_str().unwrap())
-        .with_fp16(quantized)
-        .build(),
-     */
     if has_cuda {
         vec![CUDAExecutionProvider::default().build()]
     } else {
-        vec![DirectMLExecutionProvider::default().build()]
+        vec![CPUExecutionProvider::default().build()]
     }
 }
 
 impl ParakeetModel {
     pub fn new<P: AsRef<Path>>(model_dir: P, mut is_quantized: bool, has_cuda: bool) -> Result<Self, ParakeetError> {
 
+        // in windows, if has cuda, unquantized model has better performance. for cpu, int8 quantized model has better performance.
+        // in macos, int8 quantized model has better performance. coreml provider can't fully utilize GPU and Neural Engine.
         if has_cuda {
             is_quantized = false;
+        } else {
+            is_quantized = true;
         }
 
         let encoder = Self::init_encoder_session(model_dir.as_ref(), is_quantized, has_cuda)?;
@@ -119,16 +104,7 @@ impl ParakeetModel {
         } else {
             "encoder.fp32.onnx"
         };
-        let providers = {
-            #[cfg(target_os = "macos")]
-            {
-                vec![get_coreml_provider(model_dir.as_ref().to_str().unwrap(), CPUAndGPU)]
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                get_platform_provider(has_cuda)
-            }
-        };
+        let providers = get_platform_provider(has_cuda);
 
         log::info!("Loading encoder model from {}...", encoder_model_name);
         let encoder = Session::builder().unwrap()
@@ -136,7 +112,7 @@ impl ParakeetModel {
             .with_execution_providers(providers)?
             .with_parallel_execution(true)?
             .with_intra_threads(4)?
-            .with_inter_threads(2)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join(encoder_model_name))?;
         Ok(encoder)
     }
@@ -152,16 +128,7 @@ impl ParakeetModel {
         } else {
             "decoder.onnx"
         };
-        let providers = {
-            #[cfg(target_os = "macos")]
-            {
-                vec![get_coreml_provider(model_dir.as_ref().to_str().unwrap(), CPUAndGPU)]
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                get_platform_provider(has_cuda)
-            }
-        };
+        let providers = get_platform_provider(has_cuda);
 
         log::info!("Loading decoder model from {}...", decoder_model_name);
         let decoder = Session::builder().unwrap()
@@ -185,16 +152,7 @@ impl ParakeetModel {
         } else {
             "joint.pred.onnx"
         };
-        let providers = {
-            #[cfg(target_os = "macos")]
-            {
-                vec![get_coreml_provider(model_dir.as_ref().to_str().unwrap(), CPUAndNeuralEngine)]
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                get_platform_provider(has_cuda)
-            }
-        };
+        let providers = get_platform_provider(has_cuda);
 
         log::info!("Loading joint_pred model from {}...", joint_pred_model_name);
         let joint_pred = Session::builder().unwrap()
@@ -218,16 +176,7 @@ impl ParakeetModel {
         } else {
             "joint.enc.onnx"
         };
-        let providers = {
-            #[cfg(target_os = "macos")]
-            {
-                vec![get_coreml_provider(model_dir.as_ref().to_str().unwrap(), CPUAndNeuralEngine)]
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                get_platform_provider(has_cuda)
-            }
-        };
+        let providers = get_platform_provider(has_cuda);
 
         log::info!("Loading joint_enc model from {}...", joint_enc_model_name);
         let joint_enc = Session::builder().unwrap()
@@ -251,16 +200,7 @@ impl ParakeetModel {
         } else {
             "joint.joint_net.onnx"
         };
-        let providers = {
-            #[cfg(target_os = "macos")]
-            {
-                vec![get_coreml_provider(model_dir.as_ref().to_str().unwrap(), CPUAndNeuralEngine)]
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                get_platform_provider(has_cuda)
-            }
-        };
+        let providers = get_platform_provider(has_cuda);
 
         log::info!("Loading joint_net model from {}...", joint_net_model_name);
         let joint_net = Session::builder().unwrap()
@@ -280,16 +220,7 @@ impl ParakeetModel {
         has_cuda: bool,
     ) -> Result<Session, ParakeetError> {
         let preprocessor_model_name = "nemo128.onnx";
-        let providers = {
-            #[cfg(target_os = "macos")]
-            {
-                vec![get_coreml_provider(model_dir.as_ref().to_str().unwrap(), CPUAndGPU)]
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                get_platform_provider(has_cuda)
-            }
-        };
+        let providers = get_platform_provider(has_cuda);
 
         log::info!("Loading preprocessor model from {}...", preprocessor_model_name);
         let preprocessor = Session::builder().unwrap()
@@ -297,7 +228,7 @@ impl ParakeetModel {
             .with_execution_providers(providers)?
             .with_parallel_execution(true)?
             .with_intra_threads(4)?
-            .with_inter_threads(2)?
+            .with_inter_threads(4)?
             .commit_from_file(model_dir.as_ref().join(preprocessor_model_name))?;
         Ok(preprocessor)
     }
