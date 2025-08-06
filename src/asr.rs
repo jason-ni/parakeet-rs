@@ -150,6 +150,143 @@ impl ParakeetASR {
 
         Ok(asr_result)
     }
+
+    pub fn infer_from_encoder_output(&mut self, buffer: &[f32]) -> Result<ASRResult, ParakeetError> {
+        let shape = vec![1, 597, 1024];
+        let encoder_output: ArrayViewD<f32> = ArrayViewD::from_shape(
+            IxDyn(&shape),
+            buffer,
+        )?;
+        let blank_id = self.tokenizer.blank_id();
+
+        //let num_duration = 5;
+
+        let start_time = std::time::Instant::now();
+        let end_time = std::time::Instant::now();
+        log::info!("encoder infer time: {} ms", (end_time - start_time).as_millis());
+        println!("encoder_output shape: {:?}", encoder_output.shape());
+        println!("encoder_output: {}", encoder_output);
+
+        let encoder_output_length = encoder_output.shape()[1];
+
+        let encoder_output_projected = self.model.joint_enc_infer(&encoder_output.view())?;
+
+        let (mut state0, mut state1) = self.model.get_init_decoder_state()?;
+
+        let mut time_index = 0usize;
+        let mut safe_time_index = 0;
+        let mut time_index_current_labels;
+        let last_timestamps = encoder_output_length - 1;
+
+        let mut active = encoder_output_length > 0;
+        let mut advance = false;
+        let mut label = blank_id;
+        let mut score;
+        let mut duration;
+
+        let mut asr_result = ASRResult::new();
+
+        while active {
+            // state 1: get decoder (prediction network) output
+            let (mut decoder_output, state0_next, state1_next) = self.model.decoder_infer(
+                label,
+                &state0.view(),
+                &state1.view(),
+            )?;
+            decoder_output = self.model.joint_pred_infer(&decoder_output.view())?;
+            let f_slice = encoder_output_projected.slice(s![0, safe_time_index, ..]);
+            let f =  f_slice.to_shape(IxDyn(&[1, 1, 640]))?;
+            let logits = self.model.joint_net_infer(
+                &f.view(), &decoder_output.view())?;
+            //log::trace!("logits shape: {:?}", logits.shape());
+            //log::trace!("logits: {}", logits);
+
+            score = logits.slice(s![0, 0, 0, ..1025]).max()?.to_owned();
+            label = match logits.slice(s![0, 0, 0, ..1025]).argmax() {
+                Ok(label) => label as i64,
+                Err(e) => return Err(ParakeetError::from(e)),
+            };
+            log::trace!("score: {}, label: {}, token: {}, safe_time_index: {}",
+                score, label, self.tokenizer.decode(label), safe_time_index);
+
+            let jump_duration_index = match logits.slice(s![0, 0, 0, 1025..]).argmax() {
+                Ok(jump_duration_index) => jump_duration_index as i64,
+                Err(e) => return Err(ParakeetError::from(e)),
+            };
+            log::trace!("duration: {}", jump_duration_index);
+            duration = jump_duration_index as i32;
+            time_index_current_labels = time_index;
+
+            if duration == 0 {
+                duration = 1;
+            }
+
+            time_index += duration as usize;
+            safe_time_index = time_index.min(last_timestamps);
+            if time_index >= last_timestamps {
+                active = false;
+            }
+            if active && label == blank_id {
+                advance = true;
+            }
+
+            while advance {
+                time_index_current_labels = time_index;
+
+                //log::trace!("safe_time_index: {}", safe_time_index);
+
+                let f_slice = encoder_output_projected.slice(s![0, safe_time_index, ..]);
+                let f = f_slice.to_shape(IxDyn(&[1, 1, 640]))?;
+                let logits = self.model.joint_net_infer(
+                    &f.view(), &decoder_output.view())?;
+                //log::trace!("advance logits shape: {:?}", logits.shape());
+                //log::trace!("advance logits: {}", logits);
+                score = logits.slice(s![0, 0, 0, ..1025]).max()?.to_owned();
+                label = match logits.slice(s![0, 0, 0, ..1025]).argmax() {
+                    Ok(label) => label as i64,
+                    Err(e) => return Err(ParakeetError::from(e)),
+                };
+                log::trace!("advance score: {}, label: {}, token: {}",
+                    score, label, self.tokenizer.decode(label));
+
+                let jump_duration_index = match logits.slice(s![0, 0, 0, 1025..]).argmax() {
+                    Ok(jump_duration_index) => jump_duration_index as i64,
+                    Err(e) => return Err(ParakeetError::from(e)),
+                };
+                //log::trace!("advance jump_duration_index: {}", jump_duration_index);
+                duration = jump_duration_index as i32;
+
+                if label == blank_id && duration == 0 {
+                    duration = 1;
+                }
+                time_index += duration as usize;
+                safe_time_index = time_index.min(last_timestamps);
+                if time_index >= last_timestamps {
+                    log::trace!("==== advance active: false");
+                    active = false;
+                }
+                if active && label == blank_id {
+                    advance = true;
+                } else {
+                    advance = false;
+                }
+                //log::trace!("active: {}, advance: {}, safe_time_index: {}, time_index_current_labels: {}",
+                //    active, advance, safe_time_index, time_index_current_labels);
+            }
+            state0 = state0_next;
+            state1 = state1_next;
+            if label != blank_id {
+                asr_result.add_token_record(
+                    self.tokenizer.decode(label).to_string(),
+                    duration,
+                    time_index_current_labels as i32,
+                    score,
+                );
+            }
+        }
+
+        Ok(asr_result)
+    }
 }
 
 #[derive(Debug, Clone)]
