@@ -22,3 +22,9 @@ tar xvf parakeet-tdt-0.6b-v2-onnx.tar.gz
 ```bash
 cargo run --example run -- <onnx model dir> true
 ```
+
+# Advertisement
+
+This project is part of my personal ASR centric application called **听风转录**. In this application, I bundled Whisper.cpp/SenseVoice/Parakeet 
+into a single package. Specific in Parakeet, I recently added Parakeet-tdt_ctc-0.6B-ja(Japanese model) and Parakeet-tdt-0.6B-V3(25 European languages model). 
+It supports both Windows and MacOS. You can download it from https://pan.quark.cn/s/15d095d09465
